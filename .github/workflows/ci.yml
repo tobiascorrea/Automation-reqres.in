@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ENV: dev                 # usado pelos testes Robot
-      PROJECT_KEY: DEVQA       # Zephyr Scale usa a MESMA project key do Jira
+      PROJECT_KEY: DEV/QA       # Zephyr Scale usa a MESMA project key do Jira
 
     steps:
       - name: Checkout código
