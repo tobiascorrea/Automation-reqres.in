@@ -11,7 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ENV: dev                 # usado pelos testes Robot
-      PROJECT_KEY: SCRUM       # Jira Project Key (Zephyr Squad usa a mesma)
+      PROJECT_KEY: SCRUM       # Jira Project Key (Zephyr Essential/Scale usa a mesma)
+      CYCLE_KEY: SCRUM-R1      # <<< chave do ciclo já criado no Zephyr (ex.: SCRUM-R1)
 
     steps:
       - name: Checkout código
@@ -60,17 +61,18 @@ jobs:
           echo "Conteúdo da pasta reports:"
           ls -la reports || true
 
-      # Upload para Zephyr Squad (Cloud)
-      - name: Upload JUnit para Zephyr Squad
+      # Upload para Zephyr Essential (Scale) no ciclo existente
+      - name: Upload JUnit para Zephyr Essential (Scale)
         if: ${{ always() && (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
         continue-on-error: true
         env:
-          ZEPHYR_TOKEN: ${{ secrets.ZEPHYR_TOKEN }}   # token do Zephyr Squad (user access token)
+          ZEPHYR_TOKEN: ${{ secrets.ZEPHYR_TOKEN }}   # PAT gerado em Zephyr Essential > API Access Tokens
           PROJECT_KEY: ${{ env.PROJECT_KEY }}
+          CYCLE_KEY:   ${{ env.CYCLE_KEY }}
         shell: bash
         run: |
           if [ -z "${ZEPHYR_TOKEN:-}" ]; then
-            echo "ZEPHYR_TOKEN indisponível (provável PR de fork). Pulando upload."
+            echo "ZEPHYR_TOKEN indisponível. Pulando upload."
             exit 0
           fi
           if [ ! -f "reports/junit.xml" ]; then
@@ -78,11 +80,12 @@ jobs:
             exit 0
           fi
 
-          echo "Enviando junit.xml para Zephyr Squad (projectKey=${PROJECT_KEY})..."
+          echo "Enviando junit.xml para Zephyr Essential (projectKey=${PROJECT_KEY}, testCycleKey=${CYCLE_KEY})..."
           HTTP_CODE=$(curl -sS -o response.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer ${ZEPHYR_TOKEN}" \
             -F "file=@reports/junit.xml;type=application/xml" \
-            "https://prod-api.zephyr4jiracloud.com/v2/automations/executions/junit?projectKey=${PROJECT_KEY}&autoCreateTestCases=false")
+            -F "testCycleKey=${CYCLE_KEY}" \
+            "https://api.zephyrscale.smartbear.com/v2/automations/executions/junit?projectKey=${PROJECT_KEY}&autoCreateTestCases=false")
           echo "HTTP: $HTTP_CODE"
           echo "Resposta:"
           cat response.json || true
