@@ -10,8 +10,8 @@ jobs:
   robot-tests:
     runs-on: ubuntu-latest
     env:
-      ENV: dev                # usado pelos testes Robot
-      PROJECT_KEY: SCRUM      # Jira project key (Zephyr Scale usa a mesma key)
+      ENV: dev                 # usado pelos testes Robot
+      PROJECT_KEY: SCRUM       # Zephyr Scale usa a MESMA project key do Jira
 
     steps:
       - name: Checkout código
@@ -35,8 +35,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # Se .env.example existir, copia; caso contrário cria um .env mínimo
-      - name: Preparar .env
+      - name: Preparar .env (somente para os testes)
         shell: bash
         run: |
           if [ -f ".env.example" ]; then
@@ -44,41 +43,42 @@ jobs:
             echo "Usando .env a partir de .env.example"
           else
             echo "ENV=dev" > .env
-            # Exemplo: echo "API_BASE_URL=https://reqres.in" >> .env
             echo "Criado .env mínimo (sem .env.example)"
           fi
-          echo "Conteúdo do .env:"
-          cat .env
 
       - name: Executar testes Robot Framework (gera JUnit)
         run: |
           mkdir -p reports
           robot -d reports -x junit.xml tests/api
 
-      - name: Upload JUnit para Zephyr Scale (sempre)
-        if: always()
+      # Sobe para o Zephyr apenas em push OU PR do mesmo repo (evita fork)
+      - name: Upload JUnit para Zephyr Scale
+        if: ${{ always() && (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
+        continue-on-error: true
         env:
-          ZEPHYR_TOKEN: ${{ secrets.ZEPHYR_TOKEN }}
+          ZEPHYR_TOKEN: ${{ secrets.ZEPHYR_TOKEN }}   # <-- OK usar secrets no env do step
           PROJECT_KEY: ${{ env.PROJECT_KEY }}
+        shell: bash
         run: |
-          if [ ! -f "reports/junit.xml" ]; then
-            echo "reports/junit.xml não encontrado. Pulando upload para Zephyr."
+          if [ -z "${ZEPHYR_TOKEN:-}" ]; then
+            echo "ZEPHYR_TOKEN indisponível (provável PR de fork). Pulando upload."
             exit 0
           fi
+          if [ ! -f "reports/junit.xml" ]; then
+            echo "reports/junit.xml não encontrado. Pulando upload."
+            exit 0
+          fi
+
           echo "Enviando junit.xml para Zephyr Scale (projectKey=${PROJECT_KEY})..."
           curl -sS -X POST \
             -H "Authorization: Bearer ${ZEPHYR_TOKEN}" \
             -F "file=@reports/junit.xml;type=application/xml" \
             "https://api.zephyrscale.smartbear.com/v2/automations/executions/junit?projectKey=${PROJECT_KEY}&autoCreateTestCases=true" \
-            || { echo 'Falha no upload para Zephyr Scale'; exit 1; }
+            || echo "⚠️ Falha no upload para Zephyr Scale (pipeline não será quebrada)."
 
       - name: Publicar Relatórios Robot Framework (sempre)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: robot-reports
-          path: |
-            reports/
-            reports/log.html
-            reports/report.html
-            reports/output.xml
+          path: reports/
