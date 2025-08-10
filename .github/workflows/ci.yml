@@ -2,19 +2,27 @@ name: Robot Framework API Tests
 
 on:
   push:
-    branches:
-      - '**'
+    branches: ['**']
   pull_request:
-    branches:
-      - main
+    branches: ['main']
 
 jobs:
   robot-tests:
     runs-on: ubuntu-latest
+    env:
+      ENV: dev   # usado pelos testes
 
     steps:
       - name: Checkout código
         uses: actions/checkout@v4
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
       - name: Configurar Python
         uses: actions/setup-python@v5
@@ -26,15 +34,33 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Copiar .env.example para .env
-        run: cp .env.example .env
+      # Se .env.example existir, copia; caso contrário cria um .env mínimo
+      - name: Preparar .env
+        shell: bash
+        run: |
+          if [ -f ".env.example" ]; then
+            cp .env.example .env
+            echo "Usando .env a partir de .env.example"
+          else
+            echo "ENV=dev" > .env
+            # adicione outras variáveis padrão, se quiser
+            # echo "API_BASE_URL=https://reqres.in" >> .env
+            echo "Criado .env mínimo (sem .env.example)"
+          fi
+          echo "Conteúdo do .env:"
+          cat .env
 
       - name: Executar testes Robot Framework
         run: |
           robot -d reports tests/api
 
-      - name: Publicar Relatórios Robot Framework
+      - name: Publicar Relatórios Robot Framework (sempre)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: robot-reports
-          path:
+          path: |
+            reports/
+            reports/log.html
+            reports/report.html
+            reports/output.xml
