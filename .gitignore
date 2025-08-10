@@ -1,0 +1,33 @@
+# Ambiente virtual Python
+venv/
+ENV/
+env/
+.venv/
+
+# Arquivos de configuração de ambiente
+.env
+.env.*
+
+# Relatórios e resultados de execução
+reports/
+output.xml
+log.html
+report.html
+
+# Arquivos temporários e caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+
+# Arquivos do VSCode
+.vscode/
+
+# Arquivos de sistema
+.DS_Store
+Thumbs.db
+
+# Arquivos de testes temporários
+*.log

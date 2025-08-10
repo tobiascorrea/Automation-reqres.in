@@ -1,0 +1,4 @@
+*** Test Cases ***,${name},${job}
+Create Morpheus,Morpheus,Leader
+Create Tobias,Tobias,QA
+Create Leia,Leia,Princess

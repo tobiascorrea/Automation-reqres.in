@@ -1,0 +1,10 @@
+robotframework==7.0
+robotframework-requests==0.9.7
+robotframework-jsonlibrary==0.5
+robotframework-datadriver==1.10.0
+python-dotenv==1.0.1
+robotframework-jsonschemalibrary
+# opcionais:
+# robotframework-jsonschemalibrary
+# allure-robotframework
+# robotframework-pabot

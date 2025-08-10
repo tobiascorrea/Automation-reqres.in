@@ -1,0 +1,6 @@
+{
+  "Accept": "application/json",
+  "Content-Type": "application/json",
+  "User-Agent": "RobotFramework-Requests/1.0 (+https://robotframework.org/)",
+  "x-api-key": "reqres-free-v1"
+}
