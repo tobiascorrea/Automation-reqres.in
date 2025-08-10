@@ -49,14 +49,24 @@ jobs:
       - name: Executar testes Robot Framework (gera JUnit)
         run: |
           mkdir -p reports
+          # Gera JUnit diretamente
           robot -d reports -x junit.xml tests/api
+
+      - name: Garantir junit.xml (converte output.xml se necessário)
+        run: |
+          if [ ! -f "reports/junit.xml" ] && [ -f "reports/output.xml" ]; then
+            echo "Gerando junit.xml a partir de reports/output.xml..."
+            rebot --xunit reports/junit.xml --output NONE reports/output.xml
+          fi
+          echo "Conteúdo da pasta reports:"
+          ls -la reports || true
 
       # Sobe para o Zephyr apenas em push OU PR do mesmo repo (evita fork)
       - name: Upload JUnit para Zephyr Scale
         if: ${{ always() && (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
         continue-on-error: true
         env:
-          ZEPHYR_TOKEN: ${{ secrets.ZEPHYR_TOKEN }}   # <-- OK usar secrets no env do step
+          ZEPHYR_TOKEN: ${{ secrets.ZEPHYR_TOKEN }}   # secret criado no repositório
           PROJECT_KEY: ${{ env.PROJECT_KEY }}
         shell: bash
         run: |
