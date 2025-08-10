@@ -13,14 +13,14 @@ ${VALID_PASSWORD}   pistol
 ${MISSING_PASSWORD}    None
 
 *** Test Cases ***
-Register Should Succeed
+SCRUM-T2 Register Should Succeed
     [Tags]    smoke    positive
     ${resp}=    Register User    ${VALID_EMAIL}    ${VALID_PASSWORD}
     Status Should Be    ${resp}    200
     Response Should Contain Keys    ${resp}    id    token
     Field Should Not Be Empty       ${resp}    token
 
-Register Should Fail Without Password
+SCRUM-T3 Register Should Fail Without Password
     [Tags]    negative
     ${resp}=    Register User    ${VALID_EMAIL}    ${MISSING_PASSWORD}
     Status Should Be    ${resp}    400

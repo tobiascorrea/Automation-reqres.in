@@ -11,11 +11,11 @@ ${EMAIL}      eve.holt@reqres.in
 ${PASSWORD}   cityslicka
 
 *** Test Cases ***
-Login Should Fail Without Password
+SCRUM-T11 Login Should Fail Without Password
     ${resp}=    Login User    ${EMAIL}    ${None}
     Status Should Be    ${resp}    400
     # Mensagens podem variar; se quiser, valide só o status
 
-Login Should Fail Without Email
+SCRUM-T12 Login Should Fail Without Email
     ${resp}=    Login User    ${None}    ${PASSWORD}
     Status Should Be    ${resp}    400

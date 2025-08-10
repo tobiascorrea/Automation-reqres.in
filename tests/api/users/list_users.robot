@@ -7,7 +7,7 @@ Suite Teardown   Close API Session
 Test Tags        users    list    contract
 
 *** Test Cases ***
-List Users - Page 2 Should Return Data
+SCRUM-T4 List Users - Page 2 Should Return Data
     [Tags]    smoke
     ${resp}=    List Users    2
     Status Should Be    ${resp}    200

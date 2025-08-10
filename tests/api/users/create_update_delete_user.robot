@@ -19,7 +19,7 @@ Test Tags        users    crud    regression
 DDT
 
 *** Keywords ***
-Create-Update-Delete User Flow
+SCRUM-T6 Create-Update-Delete User Flow
     [Arguments]    ${name}    ${job}
     # CREATE
     ${create}=    Create User    ${name}    ${job}
