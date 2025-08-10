@@ -10,7 +10,7 @@ Test Tags        misc    performance-lite
 ${DELAY_SECONDS}    3
 
 *** Test Cases ***
-Users Endpoint Should Respect Artificial Delay
+SCRUM-T7 Users Endpoint Should Respect Artificial Delay
     ${start}=    Get Time    epoch
     ${params}=   Create Dictionary    delay=${DELAY_SECONDS}
     ${resp}=     GET    /api/users    ${params}

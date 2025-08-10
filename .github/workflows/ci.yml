@@ -10,7 +10,9 @@ jobs:
   robot-tests:
     runs-on: ubuntu-latest
     env:
-      ENV: dev   # usado pelos testes
+      ENV: dev                 # usado pelos testes Robot
+      PROJECT_KEY: SCRUM       # Jira Project Key (Zephyr Essential/Scale usa a mesma)
+      CYCLE_KEY: SCRUM-R1      # <<< chave do ciclo já criado no Zephyr (ex.: SCRUM-R1)
 
     steps:
       - name: Checkout código
@@ -34,8 +36,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # Se .env.example existir, copia; caso contrário cria um .env mínimo
-      - name: Preparar .env
+      - name: Preparar .env (somente para os testes)
         shell: bash
         run: |
           if [ -f ".env.example" ]; then
@@ -43,24 +44,55 @@ jobs:
             echo "Usando .env a partir de .env.example"
           else
             echo "ENV=dev" > .env
-            # adicione outras variáveis padrão, se quiser
-            # echo "API_BASE_URL=https://reqres.in" >> .env
             echo "Criado .env mínimo (sem .env.example)"
           fi
-          echo "Conteúdo do .env:"
-          cat .env
 
-      - name: Executar testes Robot Framework
+      - name: Executar testes Robot Framework (gera JUnit)
         run: |
-          robot -d reports tests/api
+          mkdir -p reports
+          robot -d reports -x junit.xml tests/api
+
+      - name: Garantir junit.xml (converte output.xml se necessário)
+        run: |
+          if [ ! -f "reports/junit.xml" ] && [ -f "reports/output.xml" ]; then
+            echo "Gerando junit.xml a partir de reports/output.xml..."
+            rebot --xunit reports/junit.xml --output NONE reports/output.xml
+          fi
+          echo "Conteúdo da pasta reports:"
+          ls -la reports || true
+
+      # Upload para Zephyr Essential (Scale) no ciclo existente
+      - name: Upload JUnit para Zephyr Essential (Scale)
+        if: ${{ always() && (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
+        continue-on-error: true
+        env:
+          ZEPHYR_TOKEN: ${{ secrets.ZEPHYR_TOKEN }}   # PAT gerado em Zephyr Essential > API Access Tokens
+          PROJECT_KEY: ${{ env.PROJECT_KEY }}
+          CYCLE_KEY:   ${{ env.CYCLE_KEY }}
+        shell: bash
+        run: |
+          if [ -z "${ZEPHYR_TOKEN:-}" ]; then
+            echo "ZEPHYR_TOKEN indisponível. Pulando upload."
+            exit 0
+          fi
+          if [ ! -f "reports/junit.xml" ]; then
+            echo "reports/junit.xml não encontrado. Pulando upload."
+            exit 0
+          fi
+
+          echo "Enviando junit.xml para Zephyr Essential (projectKey=${PROJECT_KEY}, testCycleKey=${CYCLE_KEY})..."
+          HTTP_CODE=$(curl -sS -o response.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer ${ZEPHYR_TOKEN}" \
+            -F "file=@reports/junit.xml;type=application/xml" \
+            -F "testCycleKey=${CYCLE_KEY}" \
+            "https://api.zephyrscale.smartbear.com/v2/automations/executions/junit?projectKey=${PROJECT_KEY}&autoCreateTestCases=false")
+          echo "HTTP: $HTTP_CODE"
+          echo "Resposta:"
+          cat response.json || true
 
       - name: Publicar Relatórios Robot Framework (sempre)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: robot-reports
-          path: |
-            reports/
-            reports/log.html
-            reports/report.html
-            reports/output.xml
+          path: reports/

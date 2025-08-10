@@ -10,7 +10,7 @@ Test Tags        users    get
 ${KNOWN_ID}      2
 
 *** Test Cases ***
-Get Single User Should Return User
+SCRUM-T5 Get Single User Should Return User
     [Tags]    positive    smoke
     ${resp}=    Get Single User    ${KNOWN_ID}
     Status Should Be    ${resp}    200

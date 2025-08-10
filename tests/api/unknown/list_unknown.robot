@@ -7,7 +7,7 @@ Suite Teardown   Close API Session
 Test Tags        unknown    list    contract
 
 *** Test Cases ***
-List Unknown - Page 1 Should Return Data
+SCRUM-T8 List Unknown - Page 1 Should Return Data
     [Tags]    positive    smoke
     ${resp}=    List Resources    1    6
     Status Should Be    ${resp}    200

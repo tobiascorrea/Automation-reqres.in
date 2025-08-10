@@ -11,7 +11,7 @@ ${KNOWN_RESOURCE_ID}      2
 ${UNKNOWN_RESOURCE_ID}    23
 
 *** Test Cases ***
-Get Single Resource Should Return Resource
+SCRUM-T9 Get Single Resource Should Return Resource
     [Tags]    positive    smoke
     ${resp}=    Get Single Resource    ${KNOWN_RESOURCE_ID}
     Status Should Be    ${resp}    200
@@ -20,7 +20,7 @@ Get Single Resource Should Return Resource
     Dictionary Should Contain Key    ${json}[data]  id
     Should Be Equal As Integers      ${json}[data][id]    ${KNOWN_RESOURCE_ID}
 
-Get Single Resource Should Return 404 When Not Found
+SCRUM-T10 Get Single Resource Should Return 404 When Not Found
     [Tags]    negative
     ${resp}=    Get Single Resource    ${UNKNOWN_RESOURCE_ID}
     Status Should Be    ${resp}    404

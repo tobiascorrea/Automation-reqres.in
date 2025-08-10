@@ -11,7 +11,7 @@ ${EMAIL}      eve.holt@reqres.in
 ${PASSWORD}   cityslicka
 
 *** Test Cases ***
-Login Should Return Token
+SCRUM-T1 Login Should Return Token
     [Tags]    smoke    positive
     ${resp}=    Login User    ${EMAIL}    ${PASSWORD}
     Status Should Be    ${resp}    200

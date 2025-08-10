@@ -4,31 +4,27 @@ Resource         ../../../resources/clients/users.resource
 Resource         ../../../resources/keywords/validators.resource
 Suite Setup      Open API Session
 Suite Teardown   Close API Session
-
-# DataDriver:
-# - dialect=excel -> separador vírgula
-# - NADA de "arguments=" aqui.
+Test Tags        users    crud    ddt
 Library          DataDriver    file=../../../data/datasets/users_create.csv    dialect=excel    encoding=utf-8
-
-# Template recebe ${name} e ${job} (nomes batem com cabeçalhos do CSV)
 Test Template    Create-Update-Delete User Flow
-Test Tags        users    crud    regression
 
 *** Test Cases ***
-# Caso "semente" — DataDriver vai gerar um por linha do CSV
-DDT
+# Caso semente — DataDriver gera um por linha do CSV e substitui {name}/{job}
+SCRUM-T6 Create-Update-Delete User Flow - {name}/{job}
 
 *** Keywords ***
 Create-Update-Delete User Flow
     [Arguments]    ${name}    ${job}
+
     # CREATE
     ${create}=    Create User    ${name}    ${job}
     Status Should Be    ${create}    201
     ${cjson}=    Set Variable    ${create.json()}
-    ${user_id}=    Set Variable    ${cjson}[id]
+    ${user_id}=  Set Variable    ${cjson}[id]
 
     # UPDATE (PUT)
-    ${update}=    Update User    ${user_id}    ${name}    ${job} Engineer
+    ${updated_job}=    Catenate    SEPARATOR=    ${job}    Engineer
+    ${update}=    Update User    ${user_id}    ${name}    ${updated_job}
     Status Should Be    ${update}    200
     ${ujson}=    Set Variable    ${update.json()}
     Should Be Equal    ${ujson}[name]    ${name}
