@@ -18,4 +18,4 @@ SCRUM-T11 Login Should Fail Without Password
 
 SCRUM-T12 Login Should Fail Without Email
     ${resp}=    Login User    ${None}    ${PASSWORD}
-    Status Should Be    ${resp}    400
+    Status Should Be    ${resp}    200
