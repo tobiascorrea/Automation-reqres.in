@@ -156,7 +156,7 @@ jobs:
           echo "Resposta:"
           cat response.json || true
 
-      # --- CRIA A ISSUE NO JIRA E ANEXA RELATÓRIOS (sem jq) ---
+      # --- CRIA A ISSUE NO JIRA E ANEXA RELATÓRIOS (robusto) ---
       - name: Criar Issue no Jira com anexos (sempre)
         if: always()
         id: jira
@@ -201,7 +201,6 @@ jobs:
 
           export SUMMARY DESCRIPTION_TEXT ISSUE_TYPE LABELS PROJECT_KEY
 
-          # Monta payload JSON via Python (sem jq)
           python - <<'PY'
           import os, json
           payload = {
@@ -223,38 +222,49 @@ jobs:
           PY
 
           echo "Criando issue no Jira..."
-          CREATE_RESP=$(curl -sS -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+          HTTP_CREATE=$(curl -sS -w "%{http_code}" -o create_resp.json \
+            -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
             -H "Content-Type: application/json" \
             -X POST "${JIRA_BASE_URL}/rest/api/3/issue" \
             --data @payload.json)
 
-          ISSUE_KEY=$(echo "$CREATE_RESP" | python - <<'PY'
-          import sys, json
-          data = json.load(sys.stdin)
-          print(data.get("key",""))
+          echo "HTTP (create): $HTTP_CREATE"
+          echo "Resposta (create):"
+          cat create_resp.json || true
+
+          ISSUE_KEY=$(python - <<'PY'
+          import json, re
+          try:
+              data=json.load(open('create_resp.json','r'))
+              print(data.get('key',''))
+          except Exception:
+              txt=open('create_resp.json','r',errors='ignore').read() if os.path.exists('create_resp.json') else ''
+              m=re.search(r'"key"\s*:\s*"([A-Z][A-Z0-9_]+-\d+)"', txt)
+              print(m.group(1) if m else '')
           PY
           )
 
           if [ -z "$ISSUE_KEY" ]; then
-            echo "Falha ao criar issue no Jira:"
-            echo "$CREATE_RESP"
+            echo "Não foi possível obter ISSUE_KEY; anexos/comentário serão ignorados."
             exit 0
           fi
 
           echo "Issue criada: ${ISSUE_KEY}"
           echo "issue_key=${ISSUE_KEY}" >> $GITHUB_OUTPUT
 
-          # Anexos
+          # Anexos (cada arquivo verificado individualmente)
           ATTACH_URL="${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}/attachments"
-          if ls reports/* >/dev/null 2>&1; then
-            echo "Anexando relatórios..."
-            curl -sS -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
-              -H "X-Atlassian-Token: no-check" \
-              -F "file=@reports/log.html" \
-              -F "file=@reports/report.html" \
-              -F "file=@reports/junit.xml" \
-              -X POST "${ATTACH_URL}" || true
-          fi
+          for f in reports/log.html reports/report.html reports/junit.xml; do
+            if [ -f "$f" ]; then
+              echo "Anexando $f ..."
+              curl -sS -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+                -H "X-Atlassian-Token: no-check" \
+                -F "file=@${f}" \
+                -X POST "${ATTACH_URL}" >/dev/null || true
+            else
+              echo "Arquivo não encontrado: $f (ignorando)"
+            fi
+          done
 
           # Comentário com link do run + lista de falhas (se houver)
           COMMENT_TEXT="GitHub Action: ${RUN_URL}"
