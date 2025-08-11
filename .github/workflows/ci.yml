@@ -94,43 +94,27 @@ jobs:
           if os.path.exists(p):
               root = ET.parse(p).getroot()
 
-              # Coleta todos os <testcase> (qualquer nível)
+              # Coleta TODOS os <testcase> (qualquer nível)
               tcs = root.findall('.//testcase')
               total = len(tcs)
 
               for tc in tcs:
-                  # contadores (considera filhos com namespaces)
-                  if tc.find('skipped') is not None or any(ch.tag.endswith('skipped') for ch in list(tc)):
-                      skipped += 1
+                  children = list(tc)
+                  has_failure = any(ch.tag.endswith('failure') for ch in children)
+                  has_error   = any(ch.tag.endswith('error')   for ch in children)
+                  has_skipped = any(ch.tag.endswith('skipped') for ch in children)
 
-                  node = None
-                  for ch in list(tc):
-                      if ch.tag.endswith('failure'):
-                          node = ch
-                          failures += 1
-                          break
-                      if ch.tag.endswith('error'):
-                          node = ch
-                          errors += 1
-                          break
+                  if has_failure: failures += 1
+                  if has_error:   errors   += 1
+                  if has_skipped: skipped  += 1
 
+                  node = next((ch for ch in children if ch.tag.endswith('failure') or ch.tag.endswith('error')), None)
                   if node is not None:
                       name = tc.attrib.get('name', '')
                       cls  = tc.attrib.get('classname', '')
                       msg  = (node.attrib.get('message', '') or (node.text or '')).strip()
                       msg  = (msg.splitlines()[0] if msg else '')
                       failed.append({"name": name, "class": cls, "message": msg})
-
-              # Agrega contadores das suites (se presentes nos atributos)
-              suites = root.findall('.//testsuite')
-              if suites:
-                  tf = te = ts = 0
-                  for s in suites:
-                      tf += int(s.attrib.get('failures', 0))
-                      te += int(s.attrib.get('errors', 0))
-                      ts += int(s.attrib.get('skipped', 0))
-                  if tf or te or ts:
-                      failures, errors, skipped = tf, te, ts
 
           failed_md = "\n".join([f"- **{x['name']}** ({x['class']}) — {x['message']}" for x in failed]) or "—"
 
@@ -172,15 +156,7 @@ jobs:
           echo "Resposta:"
           cat response.json || true
 
-      # --- Garantir jq para montar payloads JSON do Jira ---
-      - name: Instalar jq (se necessário)
-        shell: bash
-        run: |
-          if ! command -v jq >/dev/null 21: then
-            sudo apt-get update -y && sudo apt-get install -y jq
-          fi
-
-      # --- CRIA A ISSUE NO JIRA E ANEXA RELATÓRIOS ---
+      # --- CRIA A ISSUE NO JIRA E ANEXA RELATÓRIOS (sem jq) ---
       - name: Criar Issue no Jira com anexos (sempre)
         if: always()
         id: jira
@@ -218,37 +194,47 @@ jobs:
             EXTRA="Cenários com falha:\n${FAILED_LIST}"
           fi
 
+          SUMMARY="[CI] API Tests: ${RESULT} - ${BRANCH} (${short_sha})"
           DESCRIPTION_TEXT=$(printf "Resultado: %s\nExit code: %s\nResumo JUnit: total=%s, failures=%s, errors=%s, skipped=%s\nBranch: %s\nCommit: %s\nRun: %s\n\n%s\n" \
             "${RESULT}" "${EXIT_CODE}" "${TOTAL}" "${FAILURES}" "${ERRORS}" "${SKIPPED}" \
             "${BRANCH}" "${short_sha}" "${RUN_URL}" "${EXTRA}")
 
-          PAYLOAD=$(jq -n \
-            --arg proj "$PROJECT_KEY" \
-            --arg it "$ISSUE_TYPE" \
-            --arg sum "[CI] API Tests: ${RESULT} - ${BRANCH} (${short_sha})" \
-            --arg desc "$DESCRIPTION_TEXT" \
-            --arg labels "$LABELS" \
-            '{
-              fields: {
-                project: { key: $proj },
-                issuetype: { name: $it },
-                summary: $sum,
-                labels: ($labels | split(",") | map(.|gsub("^\\s+|\\s+$";""))),
-                description: {
-                  type: "doc",
-                  version: 1,
-                  content: [ { type: "paragraph", content: [ { type: "text", text: $desc } ] } ]
-                }
+          export SUMMARY DESCRIPTION_TEXT ISSUE_TYPE LABELS PROJECT_KEY
+
+          # Monta payload JSON via Python (sem jq)
+          python - <<'PY'
+          import os, json
+          payload = {
+            "fields": {
+              "project": {"key": os.environ["PROJECT_KEY"]},
+              "issuetype": {"name": os.environ["ISSUE_TYPE"]},
+              "summary": os.environ["SUMMARY"],
+              "labels": [s.strip() for s in os.environ.get("LABELS","").split(",") if s.strip()],
+              "description": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                  {"type":"paragraph","content":[{"type":"text","text": os.environ["DESCRIPTION_TEXT"]}]}
+                ]
               }
-            }')
+            }
+          }
+          open("payload.json","w").write(json.dumps(payload))
+          PY
 
           echo "Criando issue no Jira..."
           CREATE_RESP=$(curl -sS -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
             -H "Content-Type: application/json" \
             -X POST "${JIRA_BASE_URL}/rest/api/3/issue" \
-            --data "${PAYLOAD}")
+            --data @payload.json)
 
-          ISSUE_KEY=$(echo "$CREATE_RESP" | jq -r '.key // empty')
+          ISSUE_KEY=$(echo "$CREATE_RESP" | python - <<'PY'
+          import sys, json
+          data = json.load(sys.stdin)
+          print(data.get("key",""))
+          PY
+          )
+
           if [ -z "$ISSUE_KEY" ]; then
             echo "Falha ao criar issue no Jira:"
             echo "$CREATE_RESP"
@@ -275,14 +261,26 @@ jobs:
           if [ "${RESULT}" != "SUCCESS" ]; then
             COMMENT_TEXT="${COMMENT_TEXT}\n\nFalhas:\n${FAILED_LIST}"
           fi
+          export COMMENT_TEXT
 
-          COMMENT_PAYLOAD=$(jq -n --arg txt "$COMMENT_TEXT" \
-            '{ body: { type:"doc", version:1, content:[{type:"paragraph",content:[{type:"text",text:$txt}]}] } }')
+          python - <<'PY'
+          import os, json
+          comment = {
+            "body": {
+              "type": "doc",
+              "version": 1,
+              "content": [
+                {"type":"paragraph","content":[{"type":"text","text": os.environ["COMMENT_TEXT"]}]}
+              ]
+            }
+          }
+          open("comment.json","w").write(json.dumps(comment))
+          PY
 
           curl -sS -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
             -H "Content-Type: application/json" \
             -X POST "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}/comment" \
-            --data "${COMMENT_PAYLOAD}" >/dev/null || true
+            --data @comment.json >/dev/null || true
 
       # --- TRANSICIONAR ISSUE APENAS EM SUCESSO ---
       - name: Transicionar Issue no Jira (apenas sucesso -> Testes Concluido)
@@ -300,14 +298,23 @@ jobs:
           TRANS=$(curl -sS -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
             -G "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}/transitions")
 
-          TID=$(echo "$TRANS" | jq -r --arg t "$TARGET_STATUS_SUCCESS" '
-            .transitions[] 
-            | select((.to.name|ascii_downcase)==($t|ascii_downcase) or (.name|ascii_downcase)==($t|ascii_downcase))
-            | .id' | head -n1)
+          export TARGET_STATUS_SUCCESS
+          TID=$(echo "$TRANS" | python - <<'PY'
+          import sys, json, os
+          target = os.environ["TARGET_STATUS_SUCCESS"].lower()
+          data = json.load(sys.stdin)
+          for tr in data.get("transitions", []):
+            name = (tr.get("name","") or "").lower()
+            to   = (tr.get("to",{}).get("name","") or "").lower()
+            if name == target or to == target:
+              print(tr.get("id",""))
+              break
+          PY
+          )
 
           if [ -z "$TID" ]; then
-            echo "Transição para \"$TARGET_STATUS_SUCCESS\" não encontrada. Disponíveis:"
-            echo "$TRANS" | jq -r '.transitions[] | "\(.id)  \(.name)  ->  \(.to.name)"'
+            echo "Transição para \"$TARGET_STATUS_SUCCESS\" não encontrada. JSON recebido:"
+            echo "$TRANS"
             exit 0
           fi
 
