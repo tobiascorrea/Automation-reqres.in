@@ -76,7 +76,7 @@ jobs:
           echo "Conteúdo da pasta reports:"
           ls -la reports || true
 
-      # --- Extrair métricas e TODAS as falhas do JUnit ---
+      # --- Extrair métricas e TODAS as falhas do JUnit (ignorando namespace) ---
       - name: Extrair falhas do JUnit
         if: always()
         id: junit
@@ -94,19 +94,26 @@ jobs:
           if os.path.exists(p):
               root = ET.parse(p).getroot()
 
-              # Todos os testcases, independente do nível/suite
+              # Coleta todos os <testcase> (qualquer nível)
               tcs = root.findall('.//testcase')
               total = len(tcs)
 
               for tc in tcs:
-                  if tc.find('failure') is not None:
-                      failures += 1
-                  if tc.find('error') is not None:
-                      errors += 1
-                  if tc.find('skipped') is not None:
+                  # contadores (considera filhos com namespaces)
+                  if tc.find('skipped') is not None or any(ch.tag.endswith('skipped') for ch in list(tc)):
                       skipped += 1
 
-                  node = tc.find('failure') or tc.find('error')
+                  node = None
+                  for ch in list(tc):
+                      if ch.tag.endswith('failure'):
+                          node = ch
+                          failures += 1
+                          break
+                      if ch.tag.endswith('error'):
+                          node = ch
+                          errors += 1
+                          break
+
                   if node is not None:
                       name = tc.attrib.get('name', '')
                       cls  = tc.attrib.get('classname', '')
@@ -114,9 +121,19 @@ jobs:
                       msg  = (msg.splitlines()[0] if msg else '')
                       failed.append({"name": name, "class": cls, "message": msg})
 
+              # Agrega contadores das suites (se presentes nos atributos)
+              suites = root.findall('.//testsuite')
+              if suites:
+                  tf = te = ts = 0
+                  for s in suites:
+                      tf += int(s.attrib.get('failures', 0))
+                      te += int(s.attrib.get('errors', 0))
+                      ts += int(s.attrib.get('skipped', 0))
+                  if tf or te or ts:
+                      failures, errors, skipped = tf, te, ts
+
           failed_md = "\n".join([f"- **{x['name']}** ({x['class']}) — {x['message']}" for x in failed]) or "—"
 
-          # Grava outputs do step
           with open(out, 'a') as fh:
               print(f"total={total}", file=fh)
               print(f"failures={failures}", file=fh)
@@ -125,15 +142,6 @@ jobs:
               print("failed_list<<EOF", file=fh)
               print(failed_md, file=fh)
               print("EOF", file=fh)
-
-          # DEBUG: imprime o que foi gravado (ajuda a diagnosticar valores vazios)
-          try:
-              with open(out, 'r') as fh:
-                  print("---- GITHUB_OUTPUT (debug) ----")
-                  print(fh.read())
-                  print("------ fim debug ------")
-          except Exception:
-              pass
           PY
 
       # --- (Opcional) Upload para Zephyr Essential (Scale) no ciclo existente ---
@@ -168,7 +176,7 @@ jobs:
       - name: Instalar jq (se necessário)
         shell: bash
         run: |
-          if ! command -v jq >/dev/null 2>&1; then
+          if ! command -v jq >/dev/null 21: then
             sudo apt-get update -y && sudo apt-get install -y jq
           fi
 
