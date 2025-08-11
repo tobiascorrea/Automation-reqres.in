@@ -84,6 +84,7 @@ jobs:
         run: |
           python - <<'PY'
           import os, xml.etree.ElementTree as ET
+
           out = os.environ['GITHUB_OUTPUT']
           p = 'reports/junit.xml'
 
@@ -93,34 +94,29 @@ jobs:
           if os.path.exists(p):
               root = ET.parse(p).getroot()
 
-              # Agrega contadores de TODOS os <testsuite> (níveis diversos)
-              suites = []
-              if root.tag.endswith('testsuite'):
-                  suites = [root] + root.findall('.//testsuite')
-              else:
-                  suites = root.findall('.//testsuite')
+              # Todos os testcases, independente do nível/suite
+              tcs = root.findall('.//testcase')
+              total = len(tcs)
 
-              for s in suites:
-                  total    += int(s.attrib.get('tests', 0))
-                  failures += int(s.attrib.get('failures', 0))
-                  errors   += int(s.attrib.get('errors', 0))
-                  skipped  += int(s.attrib.get('skipped', 0))
+              for tc in tcs:
+                  if tc.find('failure') is not None:
+                      failures += 1
+                  if tc.find('error') is not None:
+                      errors += 1
+                  if tc.find('skipped') is not None:
+                      skipped += 1
 
-              # Coleta GLOBAL: todos os <testcase> que tenham <failure> ou <error>
-              for tc in root.findall('.//testcase'):
-                  f = tc.find('failure')
-                  e = tc.find('error')
-                  if f is not None or e is not None:
-                      node = f or e
+                  node = tc.find('failure') or tc.find('error')
+                  if node is not None:
                       name = tc.attrib.get('name', '')
                       cls  = tc.attrib.get('classname', '')
                       msg  = (node.attrib.get('message', '') or (node.text or '')).strip()
-                      # primeira linha da mensagem (melhor para descrição)
                       msg  = (msg.splitlines()[0] if msg else '')
                       failed.append({"name": name, "class": cls, "message": msg})
 
           failed_md = "\n".join([f"- **{x['name']}** ({x['class']}) — {x['message']}" for x in failed]) or "—"
 
+          # Grava outputs do step
           with open(out, 'a') as fh:
               print(f"total={total}", file=fh)
               print(f"failures={failures}", file=fh)
@@ -129,6 +125,15 @@ jobs:
               print("failed_list<<EOF", file=fh)
               print(failed_md, file=fh)
               print("EOF", file=fh)
+
+          # DEBUG: imprime o que foi gravado (ajuda a diagnosticar valores vazios)
+          try:
+              with open(out, 'r') as fh:
+                  print("---- GITHUB_OUTPUT (debug) ----")
+                  print(fh.read())
+                  print("------ fim debug ------")
+          except Exception:
+              pass
           PY
 
       # --- (Opcional) Upload para Zephyr Essential (Scale) no ciclo existente ---
