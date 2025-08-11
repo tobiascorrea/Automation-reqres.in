@@ -10,9 +10,11 @@ jobs:
   robot-tests:
     runs-on: ubuntu-latest
     env:
-      ENV: dev                 # usado pelos testes Robot
-      PROJECT_KEY: SCRUM       # Jira Project Key (Zephyr Essential/Scale usa a mesma)
-      CYCLE_KEY: SCRUM-R1      # <<< chave do ciclo já criado no Zephyr (ex.: SCRUM-R1)
+      ENV: dev                   # usado pelos testes Robot
+      PROJECT_KEY: SCRUM         # Jira Project Key
+      CYCLE_KEY: SCRUM-R1        # Zephyr (se usar)
+      # Labels base p/ Jira (pode sobrescrever via secrets JIRA_LABELS)
+      BASE_JIRA_LABELS: robot,api,ci
 
     steps:
       - name: Checkout código
@@ -47,12 +49,26 @@ jobs:
             echo "Criado .env mínimo (sem .env.example)"
           fi
 
-      - name: Executar testes Robot Framework (gera JUnit)
+      # --- EXECUTA ROBOT E CAPTURA O STATUS (sem quebrar o job aqui) ---
+      - name: Executar testes Robot (capturar status)
+        id: robot
+        shell: bash
         run: |
+          set +e
           mkdir -p reports
           robot -d reports -x junit.xml tests/api
+          rc=$?
+          echo "exit_code=$rc" >> $GITHUB_OUTPUT
+          if [ "$rc" -eq 0 ]; then
+            echo "result=SUCCESS" >> $GITHUB_OUTPUT
+          else
+            echo "result=FAILURE" >> $GITHUB_OUTPUT
+          fi
+          # não falha o job aqui; última etapa decide
+          exit 0
 
       - name: Garantir junit.xml (converte output.xml se necessário)
+        shell: bash
         run: |
           if [ ! -f "reports/junit.xml" ] && [ -f "reports/output.xml" ]; then
             echo "Gerando junit.xml a partir de reports/output.xml..."
@@ -61,7 +77,7 @@ jobs:
           echo "Conteúdo da pasta reports:"
           ls -la reports || true
 
-      # Upload para Zephyr Essential (Scale) no ciclo existente
+      # --- (Opcional) Upload para Zephyr Essential (Scale) no ciclo existente ---
       - name: Upload JUnit para Zephyr Essential (Scale)
         if: ${{ always() && (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
         continue-on-error: true
@@ -90,9 +106,117 @@ jobs:
           echo "Resposta:"
           cat response.json || true
 
+      # --- Garantir jq para montar payloads JSON do Jira ---
+      - name: Instalar jq (se necessário)
+        shell: bash
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y && sudo apt-get install -y jq
+          fi
+
+      # --- CRIA A ISSUE NO JIRA E ANEXA RELATÓRIOS ---
+      - name: Criar Issue no Jira com anexos (sempre)
+        if: always()
+        id: jira
+        env:
+          JIRA_BASE_URL:   ${{ secrets.JIRA_BASE_URL }}
+          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN:  ${{ secrets.JIRA_API_TOKEN }}
+          PROJECT_KEY:     ${{ env.PROJECT_KEY }}
+          # labels default podem ser sobrescritas por secret
+          JIRA_LABELS:     ${{ secrets.JIRA_LABELS || env.BASE_JIRA_LABELS }}
+          RESULT:          ${{ steps.robot.outputs.result }}
+          EXIT_CODE:       ${{ steps.robot.outputs.exit_code }}
+          RUN_URL:         ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BRANCH:          ${{ github.ref_name }}
+          SHA:             ${{ github.sha }}
+        shell: bash
+        run: |
+          if [ -z "${JIRA_BASE_URL:-}" ] || [ -z "${JIRA_USER_EMAIL:-}" ] || [ -z "${JIRA_API_TOKEN:-}" ]; then
+            echo "Secrets do Jira ausentes; pulando criação da issue."
+            exit 0
+          fi
+
+          short_sha="${SHA:0:7}"
+          # Issue type dinâmico: Task (sucesso) / Bug (falha)
+          if [ "${RESULT}" = "SUCCESS" ]; then
+            ISSUE_TYPE="Task"
+            LABELS="${JIRA_LABELS},success"
+          else
+            ISSUE_TYPE="Bug"
+            LABELS="${JIRA_LABELS},failure"
+          fi
+
+          DESCRIPTION_TEXT="Resultado: ${RESULT}\nExit code: ${EXIT_CODE}\nBranch: ${BRANCH}\nCommit: ${short_sha}\nRun: ${RUN_URL}"
+
+          PAYLOAD=$(jq -n \
+            --arg proj "$PROJECT_KEY" \
+            --arg it "$ISSUE_TYPE" \
+            --arg sum "[CI] API Tests: ${RESULT} - ${BRANCH} (${short_sha})" \
+            --arg desc "$DESCRIPTION_TEXT" \
+            --arg labels "$LABELS" \
+            '{
+              fields: {
+                project: { key: $proj },
+                issuetype: { name: $it },
+                summary: $sum,
+                labels: ($labels | split(",") | map(.|gsub("^\\s+|\\s+$";""))),
+                description: {
+                  type: "doc",
+                  version: 1,
+                  content: [
+                    { type: "paragraph", content: [ { type: "text", text: $desc } ] }
+                  ]
+                }
+              }
+            }')
+
+          echo "Criando issue no Jira..."
+          CREATE_RESP=$(curl -sS -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -X POST "${JIRA_BASE_URL}/rest/api/3/issue" \
+            --data "${PAYLOAD}")
+
+          ISSUE_KEY=$(echo "$CREATE_RESP" | jq -r '.key // empty')
+          if [ -z "$ISSUE_KEY" ]; then
+            echo "Falha ao criar issue no Jira:"
+            echo "$CREATE_RESP"
+            exit 0
+          fi
+
+          echo "Issue criada: ${ISSUE_KEY}"
+          echo "issue_key=${ISSUE_KEY}" >> $GITHUB_OUTPUT
+
+          # Anexos (se existirem)
+          ATTACH_URL="${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}/attachments"
+          if ls reports/* >/dev/null 2>&1; then
+            echo "Anexando relatórios..."
+            curl -sS -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+              -H "X-Atlassian-Token: no-check" \
+              -F "file=@reports/log.html" \
+              -F "file=@reports/report.html" \
+              -F "file=@reports/junit.xml" \
+              -X POST "${ATTACH_URL}" || true
+          fi
+
+          # Comentário com link do run (opcional)
+          COMMENT_PAYLOAD=$(jq -n \
+            --arg txt "GitHub Action run: ${RUN_URL}" \
+            '{ body: { type:"doc", version:1, content:[{type:"paragraph",content:[{type:"text",text:$txt}]}] } }')
+
+          curl -sS -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -X POST "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}/comment" \
+            --data "${COMMENT_PAYLOAD}" >/dev/null || true
+
       - name: Publicar Relatórios Robot Framework (sempre)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: robot-reports
           path: reports/
+
+      # --- FALHA O JOB SE HOUVE FALHA NOS TESTES ---
+      - name: Falhar pipeline se houve falha nos testes
+        if: ${{ steps.robot.outputs.exit_code != '0' }}
+        run: exit 1
