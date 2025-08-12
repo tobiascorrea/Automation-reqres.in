@@ -15,6 +15,9 @@ jobs:
       CYCLE_KEY: SCRUM-R1        # Zephyr (se usar)
       BASE_JIRA_LABELS: robot,api,ci
       FORCE_FAIL: ${{ vars.FORCE_FAIL || 'false' }}   # canário opcional
+      TARGET_STATUS_SUCCESS: "Testes Concluido"       # alvo por nome (case-insensitive)
+      # Opcional: Se souber a transição exata, defina em Secrets/Vars do repo:
+      # TARGET_TRANSITION_ID: "31"
 
     steps:
       - name: Checkout código
@@ -233,7 +236,7 @@ jobs:
           cat create_resp.json || true
 
           ISSUE_KEY=$(python - <<'PY'
-          import json, re
+          import json, re, os
           try:
               data=json.load(open('create_resp.json','r'))
               print(data.get('key',''))
@@ -292,7 +295,7 @@ jobs:
             -X POST "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}/comment" \
             --data @comment.json >/dev/null || true
 
-      # --- TRANSICIONAR ISSUE APENAS EM SUCESSO ---
+      # --- TRANSICIONAR ISSUE APENAS EM SUCESSO (robusto, com fallback por ID) ---
       - name: Transicionar Issue no Jira (apenas sucesso -> Testes Concluido)
         if: ${{ always() && steps.jira.outputs.issue_key && steps.robot.outputs.result == 'SUCCESS' }}
         env:
@@ -300,40 +303,66 @@ jobs:
           JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
           JIRA_API_TOKEN:  ${{ secrets.JIRA_API_TOKEN }}
           ISSUE_KEY:       ${{ steps.jira.outputs.issue_key }}
-          TARGET_STATUS_SUCCESS: "Testes Concluido"
+          TARGET_STATUS_SUCCESS: ${{ env.TARGET_STATUS_SUCCESS }}
+          TARGET_TRANSITION_ID:  ${{ vars.TARGET_TRANSITION_ID || '' }}
         shell: bash
         run: |
-          set -e
+          set +e
           echo "Buscando transições disponíveis para ${ISSUE_KEY}…"
-          TRANS=$(curl -sS -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
-            -G "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}/transitions")
+          HTTP_T=$(curl -sS -w "%{http_code}" -o transitions.json \
+            -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+            "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}/transitions")
+          echo "HTTP (transitions): $HTTP_T"
 
-          export TARGET_STATUS_SUCCESS
-          TID=$(echo "$TRANS" | python - <<'PY'
-          import sys, json, os
-          target = os.environ["TARGET_STATUS_SUCCESS"].lower()
-          data = json.load(sys.stdin)
-          for tr in data.get("transitions", []):
-            name = (tr.get("name","") or "").lower()
-            to   = (tr.get("to",{}).get("name","") or "").lower()
-            if name == target or to == target:
-              print(tr.get("id",""))
-              break
-          PY
-          )
-
-          if [ -z "$TID" ]; then
-            echo "Transição para \"$TARGET_STATUS_SUCCESS\" não encontrada. JSON recebido:"
-            echo "$TRANS"
+          if [ "$HTTP_T" != "200" ]; then
+            echo "⚠️ Não foi possível obter transições (HTTP $HTTP_T). Conteúdo bruto abaixo:"
+            cat transitions.json || true
             exit 0
           fi
 
-          echo "Executando transição id=${TID} para \"${TARGET_STATUS_SUCCESS}\"…"
-          curl -sS -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+          # Se TARGET_TRANSITION_ID estiver definido, usa ele direto
+          if [ -n "${TARGET_TRANSITION_ID:-}" ]; then
+            TID="${TARGET_TRANSITION_ID}"
+          else
+            export TARGET_STATUS_SUCCESS
+            TID=$(python - <<'PY'
+            import json, os
+            data = json.load(open('transitions.json','r'))
+            target = os.environ["TARGET_STATUS_SUCCESS"].lower()
+            for tr in data.get("transitions", []):
+                name = (tr.get("name","") or "").lower()
+                to   = (tr.get("to",{}).get("name","") or "").lower()
+                if name == target or to == target:
+                    print(tr.get("id",""))
+                    break
+            PY
+            )
+          fi
+
+          if [ -z "$TID" ]; then
+            echo "⚠️ Transição para \"${TARGET_STATUS_SUCCESS}\" não encontrada. Disponíveis:"
+            python - <<'PY' || true
+import json
+data=json.load(open('transitions.json','r'))
+for tr in data.get("transitions", []):
+    print(f"- {tr.get('id')}  {tr.get('name')} -> {tr.get('to',{}).get('name')}")
+PY
+            exit 0
+          fi
+
+          echo "Executando transição id=${TID}…"
+          HTTP_DO=$(curl -sS -w "%{http_code}" -o /dev/null \
+            -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
             -H "Content-Type: application/json" \
             -X POST "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}/transitions" \
-            --data "{\"transition\": {\"id\": \"${TID}\"}}" >/dev/null
-          echo "OK: Issue ${ISSUE_KEY} transicionada."
+            --data "{\"transition\": {\"id\": \"${TID}\"}}")
+          echo "HTTP (transition): $HTTP_DO"
+
+          if [ "$HTTP_DO" != "204" ]; then
+            echo "⚠️ Transição não aplicada (HTTP $HTTP_DO)."
+          else
+            echo "OK: Issue ${ISSUE_KEY} transicionada."
+          fi
 
       - name: Publicar Relatórios Robot Framework (sempre)
         if: always()
