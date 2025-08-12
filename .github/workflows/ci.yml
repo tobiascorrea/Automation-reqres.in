@@ -2,17 +2,22 @@ name: Robot Framework API Tests
 
 on:
   push:
-    branches: ['**']
+    branches: ["**"]
   pull_request:
-    branches: ['main']
+    branches: ["main"]
 
 jobs:
   robot-tests:
     runs-on: ubuntu-latest
     env:
-      ENV: dev                 # usado pelos testes Robot
-      PROJECT_KEY: SCRUM       # Jira Project Key (Zephyr Essential/Scale usa a mesma)
-      CYCLE_KEY: SCRUM-R1      # <<< chave do ciclo já criado no Zephyr (ex.: SCRUM-R1)
+      ENV: dev # usado pelos testes Robot
+      PROJECT_KEY: SCRUM # Jira Project Key
+      CYCLE_KEY: SCRUM-R1 # Zephyr (se usar)
+      BASE_JIRA_LABELS: robot,api,ci
+      FORCE_FAIL: ${{ vars.FORCE_FAIL || 'false' }} # canário opcional
+      TARGET_STATUS_SUCCESS: "Testes Concluido" # alvo por nome (case-insensitive)
+      # Opcional: se souber a transição exata, defina no repo (vars/secrets):
+      # TARGET_TRANSITION_ID: "31"
 
     steps:
       - name: Checkout código
@@ -29,7 +34,7 @@ jobs:
       - name: Configurar Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Instalar dependências
         run: |
@@ -47,12 +52,25 @@ jobs:
             echo "Criado .env mínimo (sem .env.example)"
           fi
 
-      - name: Executar testes Robot Framework (gera JUnit)
+      # --- EXECUTA ROBOT E CAPTURA O STATUS (sem quebrar o job aqui) ---
+      - name: Executar testes Robot (capturar status)
+        id: robot
+        shell: bash
         run: |
+          set +e
           mkdir -p reports
-          robot -d reports -x junit.xml tests/api
+          robot -d reports -x junit.xml -v FORCE_FAIL:${{ env.FORCE_FAIL }} tests/api
+          rc=$?
+          echo "exit_code=$rc" >> $GITHUB_OUTPUT
+          if [ "$rc" -eq 0 ]; then
+            echo "result=SUCCESS" >> $GITHUB_OUTPUT
+          else
+            echo "result=FAILURE" >> $GITHUB_OUTPUT
+          fi
+          exit 0
 
       - name: Garantir junit.xml (converte output.xml se necessário)
+        shell: bash
         run: |
           if [ ! -f "reports/junit.xml" ] && [ -f "reports/output.xml" ]; then
             echo "Gerando junit.xml a partir de reports/output.xml..."
@@ -61,14 +79,64 @@ jobs:
           echo "Conteúdo da pasta reports:"
           ls -la reports || true
 
-      # Upload para Zephyr Essential (Scale) no ciclo existente
+      # --- Extrair métricas e TODAS as falhas do JUnit (ignorando namespace) ---
+      - name: Extrair falhas do JUnit
+        if: always()
+        id: junit
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, xml.etree.ElementTree as ET
+
+          out = os.environ['GITHUB_OUTPUT']
+          p = 'reports/junit.xml'
+
+          total = failures = errors = skipped = 0
+          failed = []
+
+          if os.path.exists(p):
+              root = ET.parse(p).getroot()
+              tcs = root.findall('.//testcase')
+              total = len(tcs)
+
+              for tc in tcs:
+                  children = list(tc)
+                  has_failure = any(ch.tag.endswith('failure') for ch in children)
+                  has_error   = any(ch.tag.endswith('error')   for ch in children)
+                  has_skipped = any(ch.tag.endswith('skipped') for ch in children)
+
+                  if has_failure: failures += 1
+                  if has_error:   errors   += 1
+                  if has_skipped: skipped  += 1
+
+                  node = next((ch for ch in children if ch.tag.endswith('failure') or ch.tag.endswith('error')), None)
+                  if node is not None:
+                      name = tc.attrib.get('name', '')
+                      cls  = tc.attrib.get('classname', '')
+                      msg  = (node.attrib.get('message', '') or (node.text or '')).strip()
+                      msg  = (msg.splitlines()[0] if msg else '')
+                      failed.append({"name": name, "class": cls, "message": msg})
+
+          failed_md = "\n".join([f"- **{x['name']}** ({x['class']}) — {x['message']}" for x in failed]) or "—"
+
+          with open(out, 'a') as fh:
+              print(f"total={total}", file=fh)
+              print(f"failures={failures}", file=fh)
+              print(f"errors={errors}", file=fh)
+              print(f"skipped={skipped}", file=fh)
+              print("failed_list<<EOF", file=fh)
+              print(failed_md, file=fh)
+              print("EOF", file=fh)
+          PY
+
+      # --- (Opcional) Upload para Zephyr Essential (Scale) no ciclo existente ---
       - name: Upload JUnit para Zephyr Essential (Scale)
         if: ${{ always() && (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
         continue-on-error: true
         env:
-          ZEPHYR_TOKEN: ${{ secrets.ZEPHYR_TOKEN }}   # PAT gerado em Zephyr Essential > API Access Tokens
+          ZEPHYR_TOKEN: ${{ secrets.ZEPHYR_TOKEN }}
           PROJECT_KEY: ${{ env.PROJECT_KEY }}
-          CYCLE_KEY:   ${{ env.CYCLE_KEY }}
+          CYCLE_KEY: ${{ env.CYCLE_KEY }}
         shell: bash
         run: |
           if [ -z "${ZEPHYR_TOKEN:-}" ]; then
@@ -79,7 +147,6 @@ jobs:
             echo "reports/junit.xml não encontrado. Pulando upload."
             exit 0
           fi
-
           echo "Enviando junit.xml para Zephyr Essential (projectKey=${PROJECT_KEY}, testCycleKey=${CYCLE_KEY})..."
           HTTP_CODE=$(curl -sS -o response.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer ${ZEPHYR_TOKEN}" \
@@ -90,9 +157,150 @@ jobs:
           echo "Resposta:"
           cat response.json || true
 
+      # --- CRIA A ISSUE NO JIRA E ANEXA RELATÓRIOS ---
+      - name: Criar Issue no Jira com anexos (sempre)
+        if: always()
+        id: jira
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          PROJECT_KEY: ${{ env.PROJECT_KEY }}
+          JIRA_LABELS: ${{ secrets.JIRA_LABELS || env.BASE_JIRA_LABELS }}
+          RESULT: ${{ steps.robot.outputs.result }}
+          EXIT_CODE: ${{ steps.robot.outputs.exit_code }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          TOTAL: ${{ steps.junit.outputs.total }}
+          FAILURES: ${{ steps.junit.outputs.failures }}
+          ERRORS: ${{ steps.junit.outputs.errors }}
+          SKIPPED: ${{ steps.junit.outputs.skipped }}
+          FAILED_LIST: ${{ steps.junit.outputs.failed_list }}
+        shell: bash
+        run: |
+          if [ -z "${JIRA_BASE_URL:-}" ] || [ -z "${JIRA_USER_EMAIL:-}" ] || [ -z "${JIRA_API_TOKEN:-}" ]; then
+            echo "Secrets do Jira ausentes; pulando criação da issue."
+            exit 0
+          fi
+
+          short_sha="${SHA:0:7}"
+          if [ "${RESULT}" = "SUCCESS" ]; then
+            ISSUE_TYPE="Task"
+            LABELS="${JIRA_LABELS},success"
+            EXTRA="Todos os testes passaram ✅"
+          else
+            ISSUE_TYPE="Bug"
+            LABELS="${JIRA_LABELS},failure"
+            EXTRA="Cenários com falha:\n${FAILED_LIST}"
+          fi
+
+          SUMMARY="[CI] API Tests: ${RESULT} - ${BRANCH} (${short_sha})"
+          DESCRIPTION_TEXT=$(printf "Resultado: %s\nExit code: %s\nResumo JUnit: total=%s, failures=%s, errors=%s, skipped=%s\nBranch: %s\nCommit: %s\nRun: %s\n\n%s\n" \
+            "${RESULT}" "${EXIT_CODE}" "${TOTAL}" "${FAILURES}" "${ERRORS}" "${SKIPPED}" \
+            "${BRANCH}" "${short_sha}" "${RUN_URL}" "${EXTRA}")
+
+          export SUMMARY DESCRIPTION_TEXT ISSUE_TYPE LABELS PROJECT_KEY
+
+          python - <<'PY'
+          import os, json
+          payload = {
+            "fields": {
+              "project": {"key": os.environ["PROJECT_KEY"]},
+              "issuetype": {"name": os.environ["ISSUE_TYPE"]},
+              "summary": os.environ["SUMMARY"],
+              "labels": [s.strip() for s in os.environ.get("LABELS","").split(",") if s.strip()],
+              "description": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                  {"type":"paragraph","content":[{"type":"text","text": os.environ["DESCRIPTION_TEXT"]}]}
+                ]
+              }
+            }
+          }
+          open("payload.json","w").write(json.dumps(payload))
+          PY
+
+          echo "Criando issue no Jira..."
+          HTTP_CREATE=$(curl -sS -w "%{http_code}" -o create_resp.json \
+            -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -X POST "${JIRA_BASE_URL}/rest/api/3/issue" \
+            --data @payload.json)
+
+          echo "HTTP (create): $HTTP_CREATE"
+          echo "Resposta (create):"
+          cat create_resp.json || true
+
+          ISSUE_KEY=$(python - <<'PY'
+          import json, re, os
+          try:
+              data=json.load(open('create_resp.json','r'))
+              print(data.get('key',''))
+          except Exception:
+              txt=open('create_resp.json','r',errors='ignore').read() if os.path.exists('create_resp.json') else ''
+              m=re.search(r'"key"\s*:\s*"([A-Z][A-Z0-9_]+-\d+)"', txt)
+              print(m.group(1) if m else '')
+          PY
+          )
+
+          if [ -z "$ISSUE_KEY" ]; then
+            echo "Não foi possível obter ISSUE_KEY; anexos/comentário serão ignorados."
+            exit 0
+          fi
+
+          echo "Issue criada: ${ISSUE_KEY}"
+          echo "issue_key=${ISSUE_KEY}" >> $GITHUB_OUTPUT
+
+          # Anexos (cada arquivo verificado individualmente)
+          ATTACH_URL="${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}/attachments"
+          for f in reports/log.html reports/report.html reports/junit.xml; do
+            if [ -f "$f" ]; then
+              echo "Anexando $f ..."
+              curl -sS -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+                -H "X-Atlassian-Token: no-check" \
+                -F "file=@${f}" \
+                -X POST "${ATTACH_URL}" >/dev/null || true
+            else
+              echo "Arquivo não encontrado: $f (ignorando)"
+            fi
+          done
+
+          # Comentário com link do run + lista de falhas (se houver)
+          COMMENT_TEXT="GitHub Action: ${RUN_URL}"
+          if [ "${RESULT}" != "SUCCESS" ]; then
+            COMMENT_TEXT="${COMMENT_TEXT}\n\nFalhas:\n${FAILED_LIST}"
+          fi
+          export COMMENT_TEXT
+
+          python - <<'PY'
+          import os, json
+          comment = {
+            "body": {
+              "type": "doc",
+              "version": 1,
+              "content": [
+                {"type":"paragraph","content":[{"type":"text","text": os.environ["COMMENT_TEXT"]}]}
+              ]
+            }
+          }
+          open("comment.json","w").write(json.dumps(comment))
+          PY
+
+          curl -sS -u "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -X POST "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}/comment" \
+            --data @comment.json >/dev/null || true
+
       - name: Publicar Relatórios Robot Framework (sempre)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: robot-reports
           path: reports/
+
+      # --- FALHA O JOB SE HOUVE FALHA NOS TESTES ---
+      - name: Falhar pipeline se houve falha nos testes
+        if: ${{ steps.robot.outputs.exit_code != '0' }}
+        run: exit 1
