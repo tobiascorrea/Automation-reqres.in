@@ -17,28 +17,34 @@ Close API Session
     Delete All Sessions
 
 GET
-    [Arguments]    ${endpoint}    ${params}={}
+    [Arguments]    ${endpoint}    ${params}={}    ${expected_status}=any
+    [Documentation]    Realiza GET genérico. Se quiser validar automaticamente o status, informe ${expected_status} (ex.: 200, 404, 204 ou lista: 200,201).  
+    ...                Padrão 'any' mantém comportamento anterior (não falha por status) permitindo validar depois com 'Status Should Be'.
     ${is_empty}=    Evaluate    isinstance($params, dict) and len($params)==0
-    ${resp}=    Run Keyword If    ${is_empty}    Get On Session    ${SESSION_ALIAS}    ${endpoint}    expected_status=any
-    ...         ELSE    Get On Session    ${SESSION_ALIAS}    ${endpoint}    params=${params}    expected_status=any
+    ${resp}=    Run Keyword If    ${is_empty}    Get On Session    ${SESSION_ALIAS}    ${endpoint}    expected_status=${expected_status}
+    ...         ELSE    Get On Session    ${SESSION_ALIAS}    ${endpoint}    params=${params}    expected_status=${expected_status}
     RETURN    ${resp}
 
 POST
-    [Arguments]    ${endpoint}    ${payload}={}
-    ${resp}=    Post On Session   ${SESSION_ALIAS}    ${endpoint}    json=${payload}    expected_status=any
+    [Arguments]    ${endpoint}    ${payload}={}    ${expected_status}=any
+    [Documentation]    Realiza POST genérico. Ajuste ${expected_status} para validação imediata (ex.: 200, 201, 400). Usa 'any' por padrão para retrocompatibilidade.
+    ${resp}=    Post On Session   ${SESSION_ALIAS}    ${endpoint}    json=${payload}    expected_status=${expected_status}
     RETURN    ${resp}
 
 PUT
-    [Arguments]    ${endpoint}    ${payload}={}
-    ${resp}=    Put On Session    ${SESSION_ALIAS}    ${endpoint}    json=${payload}    expected_status=any
+    [Arguments]    ${endpoint}    ${payload}={}    ${expected_status}=any
+    [Documentation]    Realiza PUT genérico. Pode validar status imediatamente via ${expected_status}.
+    ${resp}=    Put On Session    ${SESSION_ALIAS}    ${endpoint}    json=${payload}    expected_status=${expected_status}
     RETURN    ${resp}
 
 PATCH
-    [Arguments]    ${endpoint}    ${payload}={}
-    ${resp}=    Patch On Session  ${SESSION_ALIAS}    ${endpoint}    json=${payload}    expected_status=any
+    [Arguments]    ${endpoint}    ${payload}={}    ${expected_status}=any
+    [Documentation]    Realiza PATCH genérico. Parametriza expected_status para validação automática.
+    ${resp}=    Patch On Session  ${SESSION_ALIAS}    ${endpoint}    json=${payload}    expected_status=${expected_status}
     RETURN    ${resp}
 
 DELETE
-    [Arguments]    ${endpoint}
-    ${resp}=    Delete On Session    ${SESSION_ALIAS}    ${endpoint}    expected_status=any
+    [Arguments]    ${endpoint}    ${expected_status}=any
+    [Documentation]    Realiza DELETE genérico. Informe expected_status (ex.: 204, 200, 404) para validar diretamente.
+    ${resp}=    Delete On Session    ${SESSION_ALIAS}    ${endpoint}    expected_status=${expected_status}
     RETURN    ${resp}
